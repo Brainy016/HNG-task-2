@@ -1,0 +1,55 @@
+# Defines the group of servers Nginx will send traffic to.
+upstream nodejs_app {
+    # --- Failover Mechanics ---
+    
+    # This is the PRIMARY server (Blue, by default).
+    # It receives all traffic.
+    # max_fails=2: Mark as down after 2 failed attempts.
+    # fail_timeout=10s: Once down, don't try it again for 10 seconds.
+    server ${PRIMARY_HOST} max_fails=2 fail_timeout=10s;
+
+    # This is the BACKUP server (Green, by default).
+    # Nginx will NOT send any traffic here unless the
+    # primary server is marked as "down" or fails a request.
+    server ${BACKUP_HOST} backup;
+}
+
+server {
+    listen 80;
+
+    location / {
+        # --- Retry Policy (Zero Failed Client Requests) ---
+        
+        # 1. This tells Nginx to try the *next* server in the upstream
+        #    if the current one fails with any of these conditions.
+        proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+        
+        # 2. This allows Nginx to retry the backup *within the same request*.
+        #    Try 1: Primary (Blue) -> Fails (e.g., 500 error)
+        #    Try 2: Backup (Green) -> Succeeds (e.g., 200 OK)
+        #    The client only sees the final 200 OK.
+        proxy_next_upstream_tries 2;
+        
+        # --- Tight Timeouts ---
+        # Fail quickly if the server isn't responding.
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 5s;
+        proxy_send_timeout 5s;
+
+        # --- Request Forwarding ---
+        # Pass the request to our upstream group defined above.
+        proxy_pass http://nodejs_app;
+        
+        # Standard headers to pass to the app.
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # --- Header Forwarding (Task Requirement) ---
+        # This is CRITICAL. It tells Nginx to pass these specific headers
+        # from the app (Blue/Green) back to the client.
+        proxy_pass_header X-App-Pool;
+        proxy_pass_header X-Release-Id;
+    }
+}
